@@ -4,6 +4,8 @@
 #include <Arduino.h>
 #include <SPI.h>
 #include <GxEPD2_BW.h>
+#include <WiFi.h>
+#include <esp_sleep.h>
 #include <stdlib.h>
 #include <sys/time.h>
 #include <time.h>
@@ -23,18 +25,32 @@ constexpr int8_t EPD_SCK  = 12;
 constexpr int8_t EPD_MOSI = 13;
 constexpr int8_t EPD_PWR     = 6;   // active-low: LOW=开,HIGH=关
 constexpr int8_t BAT_CONTROL = 17;  // HIGH=保持锂电池供电锁存
+constexpr int8_t BAT_KEY     = 18;  // PWR 按键输入,按下为 LOW
 
 GxEPD2_BW<GxEPD2_154_D67, GxEPD2_154_D67::HEIGHT> display(
   GxEPD2_154_D67(EPD_CS, EPD_DC, EPD_RST, EPD_BUSY)
 );
 
 constexpr int DAILY_NTP_SYNC_HOUR = 3;
+constexpr uint32_t SHUTDOWN_HOLD_MS = 2000;
 
 static int g_last_ntp_attempt_day_key = -1;
 
 static void hold_battery_power() {
     pinMode(BAT_CONTROL, OUTPUT);
     digitalWrite(BAT_CONTROL, HIGH);
+}
+
+static void release_battery_power() {
+    digitalWrite(BAT_CONTROL, LOW);
+}
+
+static void configure_power_button() {
+    pinMode(BAT_KEY, INPUT_PULLUP);
+}
+
+static bool power_button_pressed() {
+    return digitalRead(BAT_KEY) == LOW;
 }
 
 static void configure_timezone() {
@@ -67,6 +83,41 @@ static bool visible_minute_changed(const net_time::SyncResult& result) {
     localtime_r(&result.epoch_after, &after);
 
     return before.tm_hour != after.tm_hour || before.tm_min != after.tm_min;
+}
+
+static void shutdown_now() {
+    Serial.println("[power] shutdown requested");
+    WiFi.disconnect(true, false);
+    WiFi.mode(WIFI_OFF);
+
+    struct tm now = get_local_now();
+    Serial.println("[draw] powered-off final frame");
+    render_home_powered_off(display, now);
+
+    digitalWrite(EPD_PWR, HIGH);   // active-low: cut e-paper panel power
+    delay(100);
+    Serial.println("[power] releasing battery hold");
+    release_battery_power();
+
+    // USB 插着时 BAT_Control 不能真正断整板电源,用 deep sleep 避免继续跑 loop。
+    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+    Serial.flush();
+    esp_deep_sleep_start();
+}
+
+static bool shutdown_hold_detected() {
+    static uint32_t pressed_since = 0;
+    if (!power_button_pressed()) {
+        pressed_since = 0;
+        return false;
+    }
+
+    if (pressed_since == 0) {
+        pressed_since = millis();
+        return false;
+    }
+
+    return millis() - pressed_since >= SHUTDOWN_HOLD_MS;
 }
 
 // 编译时刻注入初始时间,断电会丢,下个 task 接 PCF85063 解决
@@ -103,11 +154,13 @@ static void sync_system_clock_from(const struct tm& t) {
 
 void setup() {
     hold_battery_power();
+    configure_power_button();
 
     Serial.begin(115200);
     delay(2000);
     Serial.println("\n[boot] paper_assistant home v5 (battery hold + rtc + ntp + partial)");
     Serial.println("[power] battery hold enabled on GPIO17");
+    Serial.println("[power] hold PWR for 2s to shut down");
     configure_timezone();
 
     // ===== 时间初始化 =====
@@ -184,6 +237,10 @@ void setup() {
 void loop() {
     static int last_minute = -1;
     static int partial_cnt = 0;
+    if (shutdown_hold_detected()) {
+        shutdown_now();
+    }
+
     struct tm now = get_local_now();
 
     if (now.tm_hour == DAILY_NTP_SYNC_HOUR &&

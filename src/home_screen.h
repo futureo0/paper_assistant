@@ -19,5 +19,9 @@ void render_home_partial_time(Display& display, const struct tm& now);
 template <typename Display>
 void render_home_with_setup_msg(Display& display, const struct tm& now, const char* msg);
 
+// 关机前最后一帧:保留当前表盘,右上角画 OFF 指示
+template <typename Display>
+void render_home_powered_off(Display& display, const struct tm& now);
+
 // 取当前系统时间
 struct tm get_local_now();

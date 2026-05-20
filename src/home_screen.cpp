@@ -96,6 +96,31 @@ void render_home_with_setup_msg(Display& display, const struct tm& now, const ch
 }
 
 template <typename Display>
+static void draw_powered_off_badge(Display& display) {
+    constexpr int CX = SCR_W - 15;
+    constexpr int CY = 13;
+    constexpr int R = 7;
+
+    display.fillRect(CX - 10, CY - 10, 20, 20, GxEPD_WHITE);
+    // Power icon: open circle + vertical stroke. Kept icon-only to avoid text overflow.
+    display.drawCircle(CX, CY, R, GxEPD_BLACK);
+    display.drawCircle(CX, CY, R - 1, GxEPD_BLACK);
+    display.fillRect(CX - 3, CY - R - 1, 7, 6, GxEPD_WHITE);
+    display.drawFastVLine(CX, CY - R - 4, 9, GxEPD_BLACK);
+    display.drawFastVLine(CX - 1, CY - R - 3, 7, GxEPD_BLACK);
+}
+
+template <typename Display>
+void render_home_powered_off(Display& display, const struct tm& now) {
+    display.setFullWindow();
+    display.firstPage();
+    do {
+        draw_full_content(display, now);
+        draw_powered_off_badge(display);
+    } while (display.nextPage());
+}
+
+template <typename Display>
 void render_home_partial_time(Display& display, const struct tm& now) {
     // 只擦写 partial window 这一带,屏幕其余像素物理保持
     display.setPartialWindow(0, PARTIAL_TOP, SCR_W, PARTIAL_BOTTOM - PARTIAL_TOP);
@@ -122,3 +147,5 @@ template void render_home_partial_time<GxEPD2_BW<GxEPD2_154_D67, GxEPD2_154_D67:
     GxEPD2_BW<GxEPD2_154_D67, GxEPD2_154_D67::HEIGHT>&, const struct tm&);
 template void render_home_with_setup_msg<GxEPD2_BW<GxEPD2_154_D67, GxEPD2_154_D67::HEIGHT>>(
     GxEPD2_BW<GxEPD2_154_D67, GxEPD2_154_D67::HEIGHT>&, const struct tm&, const char*);
+template void render_home_powered_off<GxEPD2_BW<GxEPD2_154_D67, GxEPD2_154_D67::HEIGHT>>(
+    GxEPD2_BW<GxEPD2_154_D67, GxEPD2_154_D67::HEIGHT>&, const struct tm&);
