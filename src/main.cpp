@@ -21,7 +21,8 @@ constexpr int8_t EPD_RST  = 9;
 constexpr int8_t EPD_BUSY = 8;
 constexpr int8_t EPD_SCK  = 12;
 constexpr int8_t EPD_MOSI = 13;
-constexpr int8_t EPD_PWR  = 6;   // active-low: LOW=开,HIGH=关
+constexpr int8_t EPD_PWR     = 6;   // active-low: LOW=开,HIGH=关
+constexpr int8_t BAT_CONTROL = 17;  // HIGH=保持锂电池供电锁存
 
 GxEPD2_BW<GxEPD2_154_D67, GxEPD2_154_D67::HEIGHT> display(
   GxEPD2_154_D67(EPD_CS, EPD_DC, EPD_RST, EPD_BUSY)
@@ -30,6 +31,11 @@ GxEPD2_BW<GxEPD2_154_D67, GxEPD2_154_D67::HEIGHT> display(
 constexpr int DAILY_NTP_SYNC_HOUR = 3;
 
 static int g_last_ntp_attempt_day_key = -1;
+
+static void hold_battery_power() {
+    pinMode(BAT_CONTROL, OUTPUT);
+    digitalWrite(BAT_CONTROL, HIGH);
+}
 
 static void configure_timezone() {
     setenv("TZ", net_time::TZ_ASIA_SHANGHAI, 1);
@@ -96,9 +102,12 @@ static void sync_system_clock_from(const struct tm& t) {
 }
 
 void setup() {
+    hold_battery_power();
+
     Serial.begin(115200);
     delay(2000);
-    Serial.println("\n[boot] paper_assistant home v4 (rtc + ntp + partial)");
+    Serial.println("\n[boot] paper_assistant home v5 (battery hold + rtc + ntp + partial)");
+    Serial.println("[power] battery hold enabled on GPIO17");
     configure_timezone();
 
     // ===== 时间初始化 =====
