@@ -10,9 +10,11 @@
 #include <sys/time.h>
 #include <time.h>
 
+#include "audio_player.h"
 #include "home_screen.h"
 #include "net_time.h"
 #include "rtc_pcf85063.h"
+#include "touch_ft6336.h"
 
 PCF85063 rtc;
 
@@ -33,6 +35,8 @@ GxEPD2_BW<GxEPD2_154_D67, GxEPD2_154_D67::HEIGHT> display(
 
 constexpr int DAILY_NTP_SYNC_HOUR = 3;
 constexpr uint32_t SHUTDOWN_HOLD_MS = 2000;
+constexpr uint32_t LOOP_DELAY_MS = 20;
+constexpr uint32_t CLOCK_CHECK_MS = 1000;
 
 static int g_last_ntp_attempt_day_key = -1;
 
@@ -89,6 +93,7 @@ static void shutdown_now() {
     Serial.println("[power] shutdown requested");
     WiFi.disconnect(true, false);
     WiFi.mode(WIFI_OFF);
+    audio_player::shutdown();
 
     struct tm now = get_local_now();
     Serial.println("[draw] powered-off final frame");
@@ -190,6 +195,9 @@ void setup() {
         Serial.printf("[clock] system time = %s\n", buf);
     }
 
+    touch_ft6336::begin();
+    audio_player::begin();
+
     // ===== 屏幕初始化 =====
     pinMode(EPD_PWR, OUTPUT);
     digitalWrite(EPD_PWR, LOW);    // active-low: LOW 才开
@@ -232,45 +240,58 @@ void setup() {
     Serial.println("[done] setup");
 }
 
-// loop:每分钟检测一次,变了就 partial refresh
+// loop:触摸/PWR 高频轻量检查;时间刷新/NTP 仍按秒级调度
 // 每 FULL_REFRESH_EVERY_N_MIN 次 partial 后做一次 full 清鬼影
 void loop() {
     static int last_minute = -1;
     static int partial_cnt = 0;
+    static uint32_t last_clock_check_ms = 0;
+
     if (shutdown_hold_detected()) {
         shutdown_now();
     }
 
-    struct tm now = get_local_now();
+    touch_ft6336::Point touch_point;
+    if (touch_ft6336::consume_cartoon_tap(touch_point)) {
+        Serial.printf("[touch] cartoon tap at %u,%u\n", touch_point.x, touch_point.y);
+        audio_player::play_random_voice();
+    }
 
-    if (now.tm_hour == DAILY_NTP_SYNC_HOUR &&
-        day_key(now) != g_last_ntp_attempt_day_key) {
-        Serial.println("[ntp] daily sync begin");
-        net_time::SyncResult daily_sync = net_time::try_sync(rtc, 15, 0, nullptr);
-        now = get_local_now();
-        remember_current_ntp_attempt_day();
+    uint32_t now_ms = millis();
+    if (last_clock_check_ms == 0 || now_ms - last_clock_check_ms >= CLOCK_CHECK_MS) {
+        last_clock_check_ms = now_ms;
+        struct tm now = get_local_now();
 
-        if (daily_sync.ntp_ok && visible_minute_changed(daily_sync)) {
-            Serial.println("[draw] full refresh after daily NTP");
-            render_home_full(display, now);
+        if (now.tm_hour == DAILY_NTP_SYNC_HOUR &&
+            day_key(now) != g_last_ntp_attempt_day_key) {
+            Serial.println("[ntp] daily sync begin");
+            net_time::SyncResult daily_sync = net_time::try_sync(rtc, 15, 0, nullptr);
+            now = get_local_now();
+            remember_current_ntp_attempt_day();
+
+            if (daily_sync.ntp_ok && visible_minute_changed(daily_sync)) {
+                Serial.println("[draw] full refresh after daily NTP");
+                render_home_full(display, now);
+                last_minute = now.tm_min;
+                partial_cnt = 0;
+            }
+        }
+
+        if (now.tm_min != last_minute) {
             last_minute = now.tm_min;
-            partial_cnt = 0;
+            if (partial_cnt >= FULL_REFRESH_EVERY_N_MIN) {
+                Serial.printf("[tick] %02d:%02d -> FULL (anti-ghost)\n",
+                              now.tm_hour, now.tm_min);
+                render_home_full(display, now);
+                partial_cnt = 0;
+            } else {
+                Serial.printf("[tick] %02d:%02d -> partial #%d\n",
+                              now.tm_hour, now.tm_min, partial_cnt + 1);
+                render_home_partial_time(display, now);
+                partial_cnt++;
+            }
         }
     }
 
-    if (now.tm_min != last_minute) {
-        last_minute = now.tm_min;
-        if (partial_cnt >= FULL_REFRESH_EVERY_N_MIN) {
-            Serial.printf("[tick] %02d:%02d -> FULL (anti-ghost)\n",
-                          now.tm_hour, now.tm_min);
-            render_home_full(display, now);
-            partial_cnt = 0;
-        } else {
-            Serial.printf("[tick] %02d:%02d -> partial #%d\n",
-                          now.tm_hour, now.tm_min, partial_cnt + 1);
-            render_home_partial_time(display, now);
-            partial_cnt++;
-        }
-    }
-    delay(1000);
+    delay(LOOP_DELAY_MS);
 }
