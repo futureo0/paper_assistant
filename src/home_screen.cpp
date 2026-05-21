@@ -28,6 +28,7 @@ static void draw_time(Display& display, const struct tm& now) {
     snprintf(hhmm, sizeof(hhmm), "%02d:%02d", now.tm_hour, now.tm_min);
     display.setFont(&FreeSansBold24pt7b);
     display.setTextColor(GxEPD_BLACK);
+    display.setTextSize(1);
 
     int16_t tx, ty;
     uint16_t tw, th;
@@ -44,6 +45,8 @@ static void draw_time(Display& display, const struct tm& now) {
 //      → cartoon bit=1 处画 BLACK,bit=0 处透明 (主体内的白已经被 mask 擦好)
 template <typename Display>
 static void draw_cartoon(Display& display) {
+    display.setFont();
+    display.setTextSize(1);
     display.drawBitmap(CARTOON_X, CARTOON_Y, cartoon_mask_bitmap,
                        cartoon_mask_w, cartoon_mask_h, GxEPD_WHITE);
     display.drawBitmap(CARTOON_X, CARTOON_Y, cartoon_bitmap,
@@ -64,6 +67,26 @@ void render_home_full(Display& display, const struct tm& now) {
     do {
         draw_full_content(display, now);
     } while (display.nextPage());
+}
+
+template <typename Display>
+void render_home_fast(Display& display, const struct tm& now) {
+    display.setPartialWindow(0, 0, SCR_W, SCR_H);
+    display.firstPage();
+    do {
+        draw_full_content(display, now);
+    } while (display.nextPage());
+}
+
+template <typename Display>
+void render_home_soft_clean(Display& display, const struct tm& now) {
+    display.setPartialWindow(0, 0, SCR_W, SCR_H);
+    display.firstPage();
+    do {
+        display.fillScreen(GxEPD_WHITE);
+    } while (display.nextPage());
+
+    render_home_fast(display, now);
 }
 
 // setup 阶段配 WiFi 时用:在底部 22px 白条上居中画一行 5x7 字
@@ -142,6 +165,10 @@ struct tm get_local_now() {
 
 // ---- 显式实例化 ----
 template void render_home_full<GxEPD2_BW<GxEPD2_154_D67, GxEPD2_154_D67::HEIGHT>>(
+    GxEPD2_BW<GxEPD2_154_D67, GxEPD2_154_D67::HEIGHT>&, const struct tm&);
+template void render_home_fast<GxEPD2_BW<GxEPD2_154_D67, GxEPD2_154_D67::HEIGHT>>(
+    GxEPD2_BW<GxEPD2_154_D67, GxEPD2_154_D67::HEIGHT>&, const struct tm&);
+template void render_home_soft_clean<GxEPD2_BW<GxEPD2_154_D67, GxEPD2_154_D67::HEIGHT>>(
     GxEPD2_BW<GxEPD2_154_D67, GxEPD2_154_D67::HEIGHT>&, const struct tm&);
 template void render_home_partial_time<GxEPD2_BW<GxEPD2_154_D67, GxEPD2_154_D67::HEIGHT>>(
     GxEPD2_BW<GxEPD2_154_D67, GxEPD2_154_D67::HEIGHT>&, const struct tm&);

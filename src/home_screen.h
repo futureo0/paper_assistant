@@ -8,6 +8,16 @@
 template <typename Display>
 void render_home_full(Display& display, const struct tm& now);
 
+// 页面返回首页时用:全屏内容走 SSD1681 differential partial update,
+// 避免交互路径里出现黑白全屏震荡。
+template <typename Display>
+void render_home_fast(Display& display, const struct tm& now);
+
+// 折中清屏:先用全屏 partial 刷一帧纯白,再用全屏 partial 画主页。
+// 实测:肉眼上和直接 fast refresh 接近,保留为当前返回首页路径。
+template <typename Display>
+void render_home_soft_clean(Display& display, const struct tm& now);
+
 // 只刷时间所在的横向窄带 (y=0..80) — 屏幕下方卡通主体物理保持
 // 用 SSD1681 的 partial refresh,无闪烁、毫秒级完成
 template <typename Display>

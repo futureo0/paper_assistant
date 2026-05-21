@@ -9,7 +9,11 @@ struct Point {
 };
 
 bool begin();
+void enable();
+void disable();
+bool is_enabled();
 bool get_touch(Point& point);
+bool consume_tap(Point& point);
 bool consume_cartoon_tap(Point& point);
 
 }  // namespace touch_ft6336

@@ -46,6 +46,7 @@ static void shutdown_wifi() {
     WiFi.mode(WIFI_OFF);
 }
 
+
 SyncResult try_sync(PCF85063& rtc,
                     uint16_t wifi_connect_timeout_s,
                     uint16_t portal_timeout_s,

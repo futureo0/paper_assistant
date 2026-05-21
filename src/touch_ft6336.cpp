@@ -18,6 +18,7 @@ static constexpr uint8_t BEGIN_RETRY_COUNT = 10;
 static constexpr uint32_t BEGIN_RETRY_DELAY_MS = 50;
 
 static bool g_ready = false;
+static bool g_enabled = false;
 static bool g_was_touched = false;
 static uint32_t g_last_tap_ms = 0;
 static uint32_t g_last_poll_ms = 0;
@@ -54,6 +55,13 @@ static bool point_in_cartoon(const Point& p) {
 }
 
 bool begin() {
+    enable();
+    return g_ready;
+}
+
+void enable() {
+    if (g_enabled) return;
+
     pinMode(TOUCH_RST, OUTPUT);
     digitalWrite(TOUCH_RST, HIGH);
     delay(100);
@@ -72,17 +80,37 @@ bool begin() {
     }
 
     g_ready = ok;
+    g_enabled = true;
+    g_was_touched = false;
+    g_last_poll_ms = 0;
     Serial.printf("[touch] FT6336 %s after boot probe, poll=%ums, boot points=%u\n",
                   ok ? "ready" : "not responding yet", TOUCH_POLL_MS, points);
-    return ok;
+}
+
+void disable() {
+    if (!g_enabled) return;
+
+    digitalWrite(TOUCH_RST, LOW);
+    g_enabled = false;
+    g_ready = false;
+    g_was_touched = false;
+    g_last_poll_ms = 0;
+    Serial.println("[touch] FT6336 disabled");
+}
+
+bool is_enabled() {
+    return g_enabled;
 }
 
 bool get_touch(Point& point) {
+    if (!g_enabled) return false;
     uint8_t count = 0;
     return read_touch_raw(count, point) && count > 0;
 }
 
-bool consume_cartoon_tap(Point& point) {
+bool consume_tap(Point& point) {
+    if (!g_enabled) return false;
+
     uint32_t now = millis();
     bool due_poll = g_last_poll_ms == 0 || now - g_last_poll_ms >= TOUCH_POLL_MS;
     if (!due_poll && !g_was_touched) return false;
@@ -110,15 +138,22 @@ bool consume_cartoon_tap(Point& point) {
     if (g_was_touched) return false;
     g_was_touched = true;
 
-    bool in_cartoon = point_in_cartoon(p);
-    Serial.printf("[touch] tap points=%u x=%u y=%u in_cartoon=%d\n",
-                  count, p.x, p.y, in_cartoon);
-
     if (g_last_tap_ms != 0 && now - g_last_tap_ms < TAP_DEBOUNCE_MS) return false;
-    if (!in_cartoon) return false;
 
     point = p;
     g_last_tap_ms = now;
+    return true;
+}
+
+bool consume_cartoon_tap(Point& point) {
+    Point p;
+    if (!consume_tap(p)) return false;
+
+    bool in_cartoon = point_in_cartoon(p);
+    Serial.printf("[touch] tap x=%u y=%u in_cartoon=%d\n", p.x, p.y, in_cartoon);
+    if (!in_cartoon) return false;
+
+    point = p;
     return true;
 }
 

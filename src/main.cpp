@@ -5,6 +5,7 @@
 #include <SPI.h>
 #include <GxEPD2_BW.h>
 #include <WiFi.h>
+#include <WiFiManager.h>
 #include <esp_sleep.h>
 #include <stdlib.h>
 #include <sys/time.h>
@@ -12,6 +13,7 @@
 
 #include "audio_player.h"
 #include "home_screen.h"
+#include "menu_screen.h"
 #include "net_time.h"
 #include "rtc_pcf85063.h"
 #include "touch_ft6336.h"
@@ -28,6 +30,7 @@ constexpr int8_t EPD_MOSI = 13;
 constexpr int8_t EPD_PWR     = 6;   // active-low: LOW=开,HIGH=关
 constexpr int8_t BAT_CONTROL = 17;  // HIGH=保持锂电池供电锁存
 constexpr int8_t BAT_KEY     = 18;  // PWR 按键输入,按下为 LOW
+constexpr int8_t BOOT_KEY    = 0;   // BOOT 按键输入,按下为 LOW
 
 GxEPD2_BW<GxEPD2_154_D67, GxEPD2_154_D67::HEIGHT> display(
   GxEPD2_154_D67(EPD_CS, EPD_DC, EPD_RST, EPD_BUSY)
@@ -37,8 +40,32 @@ constexpr int DAILY_NTP_SYNC_HOUR = 3;
 constexpr uint32_t SHUTDOWN_HOLD_MS = 2000;
 constexpr uint32_t LOOP_DELAY_MS = 20;
 constexpr uint32_t CLOCK_CHECK_MS = 1000;
+constexpr uint32_t BOOT_DEBOUNCE_MS = 60;
+constexpr uint8_t UI_FULL_REFRESH_AFTER_FAST = 24;
+constexpr bool USE_FULL_REFRESH_ON_HOME_RETURN = true;
+
+enum class Page : uint8_t {
+    Home,
+    Menu,
+    Volume,
+    Wifi,
+};
 
 static int g_last_ntp_attempt_day_key = -1;
+static Page g_page = Page::Home;
+static bool g_interaction_enabled = true;
+static WiFiManager g_menu_wifi_manager;
+static bool g_menu_wifi_portal_active = false;
+static uint8_t g_ui_fast_refresh_count = 0;
+
+static void apply_touch_power_state() {
+    bool should_enable_touch = g_page != Page::Home || g_interaction_enabled;
+    if (should_enable_touch) {
+        touch_ft6336::enable();
+    } else {
+        touch_ft6336::disable();
+    }
+}
 
 static void hold_battery_power() {
     pinMode(BAT_CONTROL, OUTPUT);
@@ -51,10 +78,15 @@ static void release_battery_power() {
 
 static void configure_power_button() {
     pinMode(BAT_KEY, INPUT_PULLUP);
+    pinMode(BOOT_KEY, INPUT_PULLUP);
 }
 
 static bool power_button_pressed() {
     return digitalRead(BAT_KEY) == LOW;
+}
+
+static bool boot_button_pressed() {
+    return digitalRead(BOOT_KEY) == LOW;
 }
 
 static void configure_timezone() {
@@ -123,6 +155,105 @@ static bool shutdown_hold_detected() {
     }
 
     return millis() - pressed_since >= SHUTDOWN_HOLD_MS;
+}
+
+
+static bool boot_click_detected() {
+    static bool was_down = false;
+    static uint32_t changed_at = 0;
+    static bool click_armed = false;
+
+    bool down = boot_button_pressed();
+    uint32_t now = millis();
+    if (down != was_down) {
+        was_down = down;
+        changed_at = now;
+        if (down) click_armed = true;
+        return false;
+    }
+
+    if (!down && click_armed && now - changed_at >= BOOT_DEBOUNCE_MS) {
+        click_armed = false;
+        return true;
+    }
+    return false;
+}
+
+static void render_current_home_full() {
+    struct tm now = get_local_now();
+    Serial.println("[draw] home full refresh");
+    render_home_full(display, now);
+    g_ui_fast_refresh_count = 0;
+}
+
+static void render_current_home_soft_clean() {
+    struct tm now = get_local_now();
+    Serial.println("[draw] home soft clean refresh");
+    render_home_soft_clean(display, now);
+    if (g_ui_fast_refresh_count < UINT8_MAX) g_ui_fast_refresh_count += 2;
+}
+
+static void enter_home() {
+    g_page = Page::Home;
+    apply_touch_power_state();
+    if (USE_FULL_REFRESH_ON_HOME_RETURN || g_ui_fast_refresh_count >= UI_FULL_REFRESH_AFTER_FAST) {
+        render_current_home_full();
+    } else {
+        render_current_home_soft_clean();
+    }
+}
+
+static void enter_menu() {
+    g_page = Page::Menu;
+    apply_touch_power_state();
+    Serial.println("[menu] enter");
+    menu_screen::render_menu_full(display, g_interaction_enabled,
+                                  audio_player::volume_level(), audio_player::volume_max());
+    if (g_ui_fast_refresh_count < UINT8_MAX) g_ui_fast_refresh_count++;
+}
+
+static void enter_volume_page() {
+    g_page = Page::Volume;
+    apply_touch_power_state();
+    Serial.println("[menu] volume page");
+    menu_screen::render_volume_page(display, audio_player::volume_level(), audio_player::volume_max());
+    if (g_ui_fast_refresh_count < UINT8_MAX) g_ui_fast_refresh_count++;
+}
+
+static void stop_menu_wifi_portal() {
+    if (!g_menu_wifi_portal_active) return;
+    Serial.println("[menu] stop WiFi portal");
+    g_menu_wifi_manager.stopConfigPortal();
+    WiFi.disconnect(true, false);
+    WiFi.mode(WIFI_OFF);
+    g_menu_wifi_portal_active = false;
+}
+
+static void start_wifi_manager_from_menu() {
+    g_page = Page::Wifi;
+    apply_touch_power_state();
+    menu_screen::render_wifi_page(display, "Portal starting...");
+    if (g_ui_fast_refresh_count < UINT8_MAX) g_ui_fast_refresh_count++;
+
+    g_menu_wifi_manager.setDebugOutput(false);
+    g_menu_wifi_manager.setConfigPortalBlocking(false);
+    g_menu_wifi_manager.setConfigPortalTimeout(120);
+    g_menu_wifi_manager.setMinimumSignalQuality(8);
+    WiFi.mode(WIFI_STA);
+
+    Serial.printf("[menu] WiFi portal begin: SSID=%s\n", net_time::AP_SSID);
+    g_menu_wifi_manager.startConfigPortal(net_time::AP_SSID);
+    g_menu_wifi_portal_active = true;
+    menu_screen::render_wifi_status(display, "Connect phone to AP");
+}
+
+static void handle_boot_click() {
+    if (g_page == Page::Home) {
+        enter_menu();
+    } else {
+        stop_menu_wifi_portal();
+        enter_home();
+    }
 }
 
 // 编译时刻注入初始时间,断电会丢,下个 task 接 PCF85063 解决
@@ -225,6 +356,7 @@ void setup() {
     struct tm now = get_local_now();
     Serial.println("[draw] initial full refresh");
     render_home_full(display, now);
+    g_ui_fast_refresh_count = 0;
 
     Serial.println("[ntp] startup sync begin");
     net_time::SyncResult startup_sync = net_time::try_sync(rtc, 15, 90, draw_wifi_setup_status);
@@ -235,12 +367,13 @@ void setup() {
         now = get_local_now();
         Serial.println("[draw] full refresh after startup NTP");
         render_home_full(display, now);
+        g_ui_fast_refresh_count = 0;
     }
 
     Serial.println("[done] setup");
 }
 
-// loop:触摸/PWR 高频轻量检查;时间刷新/NTP 仍按秒级调度
+// loop:触摸/PWR/BOOT 高频轻量检查;时间刷新/NTP 仍按秒级调度
 // 每 FULL_REFRESH_EVERY_N_MIN 次 partial 后做一次 full 清鬼影
 void loop() {
     static int last_minute = -1;
@@ -251,14 +384,65 @@ void loop() {
         shutdown_now();
     }
 
+    if (boot_click_detected()) {
+        handle_boot_click();
+    }
+
     touch_ft6336::Point touch_point;
-    if (touch_ft6336::consume_cartoon_tap(touch_point)) {
-        Serial.printf("[touch] cartoon tap at %u,%u\n", touch_point.x, touch_point.y);
-        audio_player::play_random_voice();
+    if (touch_ft6336::consume_tap(touch_point)) {
+        if (g_page == Page::Home) {
+            if (g_interaction_enabled) {
+                bool in_cartoon = touch_point.x >= 10 && touch_point.x < 190 &&
+                                  touch_point.y >= 15 && touch_point.y < 195;
+                Serial.printf("[touch] home tap at %u,%u in_cartoon=%d\n",
+                              touch_point.x, touch_point.y, in_cartoon);
+                if (in_cartoon) audio_player::play_random_voice();
+            }
+        } else if (g_page == Page::Menu) {
+            menu_screen::Tile tile = menu_screen::tile_at(touch_point.x, touch_point.y);
+            Serial.printf("[menu] tap tile=%u at %u,%u\n", (unsigned)tile, touch_point.x, touch_point.y);
+            if (tile == menu_screen::Tile::Wifi) {
+                start_wifi_manager_from_menu();
+            } else if (tile == menu_screen::Tile::Interaction) {
+                g_interaction_enabled = !g_interaction_enabled;
+                Serial.printf("[menu] interaction=%s\n", g_interaction_enabled ? "on" : "off");
+                apply_touch_power_state();
+                menu_screen::render_interaction_tile(display, g_interaction_enabled);
+            } else if (tile == menu_screen::Tile::Volume) {
+                enter_volume_page();
+            }
+        } else if (g_page == Page::Volume) {
+            if (touch_point.x < 70) {
+                uint8_t before = audio_player::volume_level();
+                audio_player::adjust_volume(-1);
+                uint8_t after = audio_player::volume_level();
+                if (after != before) {
+                    menu_screen::render_volume_value(display, after, audio_player::volume_max());
+                }
+            } else if (touch_point.x > 130) {
+                uint8_t before = audio_player::volume_level();
+                audio_player::adjust_volume(1);
+                uint8_t after = audio_player::volume_level();
+                if (after != before) {
+                    menu_screen::render_volume_value(display, after, audio_player::volume_max());
+                }
+            } else {
+                audio_player::play_random_voice();
+            }
+        }
+    }
+
+    if (g_page == Page::Wifi && g_menu_wifi_portal_active) {
+        if (g_menu_wifi_manager.process()) {
+            Serial.println("[menu] WiFi portal connected/saved");
+            stop_menu_wifi_portal();
+            enter_menu();
+        }
     }
 
     uint32_t now_ms = millis();
-    if (last_clock_check_ms == 0 || now_ms - last_clock_check_ms >= CLOCK_CHECK_MS) {
+    if (g_page == Page::Home &&
+        (last_clock_check_ms == 0 || now_ms - last_clock_check_ms >= CLOCK_CHECK_MS)) {
         last_clock_check_ms = now_ms;
         struct tm now = get_local_now();
 
@@ -272,6 +456,7 @@ void loop() {
             if (daily_sync.ntp_ok && visible_minute_changed(daily_sync)) {
                 Serial.println("[draw] full refresh after daily NTP");
                 render_home_full(display, now);
+                g_ui_fast_refresh_count = 0;
                 last_minute = now.tm_min;
                 partial_cnt = 0;
             }
@@ -283,6 +468,7 @@ void loop() {
                 Serial.printf("[tick] %02d:%02d -> FULL (anti-ghost)\n",
                               now.tm_hour, now.tm_min);
                 render_home_full(display, now);
+                g_ui_fast_refresh_count = 0;
                 partial_cnt = 0;
             } else {
                 Serial.printf("[tick] %02d:%02d -> partial #%d\n",

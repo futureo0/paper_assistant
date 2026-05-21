@@ -37,6 +37,7 @@ SyncResult try_sync(PCF85063& rtc,
                     uint16_t portal_timeout_s = 90,
                     StatusCallback status_cb = nullptr);
 
+
 // AP 模式时的 SSID,供调用方在屏幕/日志里引用,不要硬编码
 constexpr const char* AP_SSID = "PaperAssist-AP";
 

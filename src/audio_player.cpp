@@ -19,6 +19,8 @@ static constexpr i2s_port_t I2S_PORT = I2S_NUM_0;
 static constexpr uint32_t SAMPLE_RATE = 48000;
 static constexpr size_t WAV_HEADER_LEN = 44;
 static constexpr size_t FRAMES_PER_CHUNK = 256;
+static constexpr uint8_t VOLUME_MAX = 5;
+static constexpr uint8_t DEFAULT_VOLUME_LEVEL = 3;
 
 struct Clip {
     const uint8_t* wav;
@@ -28,12 +30,18 @@ struct Clip {
 static TaskHandle_t g_play_task = nullptr;
 static bool g_ready = false;
 static bool g_i2s_ready = false;
+static uint8_t g_volume_level = DEFAULT_VOLUME_LEVEL;
 
 static bool write_reg(uint8_t reg, uint8_t value) {
     Wire.beginTransmission(ES8311_ADDR);
     Wire.write(reg);
     Wire.write(value);
     return Wire.endTransmission() == 0;
+}
+
+static uint8_t volume_reg_for_level(uint8_t level) {
+    if (level > VOLUME_MAX) level = VOLUME_MAX;
+    return 0x80 + (0x70 * level / VOLUME_MAX);
 }
 
 static bool read_reg(uint8_t reg, uint8_t& value) {
@@ -138,7 +146,7 @@ static bool init_es8311() {
     ok &= write_reg(0x37, 0x08);
     ok &= write_reg(0x45, 0x00);
     ok &= write_reg(0x31, 0x00);  // DAC unmute
-    ok &= write_reg(0x32, 0xD0);  // moderate volume
+    ok &= write_reg(0x32, volume_reg_for_level(g_volume_level));
 
     digitalWrite(PA_CTRL, HIGH);
     if (!ok) Serial.println("[audio] ES8311 init write failed");
@@ -156,6 +164,31 @@ bool begin() {
 
 bool is_playing() {
     return g_play_task != nullptr;
+}
+
+uint8_t volume_level() {
+    return g_volume_level;
+}
+
+uint8_t volume_max() {
+    return VOLUME_MAX;
+}
+
+bool set_volume_level(uint8_t level) {
+    if (level > VOLUME_MAX) level = VOLUME_MAX;
+    if (level == g_volume_level) return true;
+    g_volume_level = level;
+    if (!g_ready) return true;
+    bool ok = write_reg(0x32, volume_reg_for_level(g_volume_level));
+    Serial.printf("[audio] volume=%u/%u reg=0x%02X\n", g_volume_level, VOLUME_MAX, volume_reg_for_level(g_volume_level));
+    return ok;
+}
+
+void adjust_volume(int8_t delta) {
+    int next = (int)g_volume_level + delta;
+    if (next < 0) next = 0;
+    if (next > VOLUME_MAX) next = VOLUME_MAX;
+    set_volume_level((uint8_t)next);
 }
 
 static bool wav_payload(const Clip& clip, const int16_t*& samples, size_t& sample_count) {
