@@ -30,6 +30,7 @@ constexpr int8_t EPD_MOSI = 13;
 constexpr int8_t EPD_PWR     = 6;   // active-low: LOW=开,HIGH=关
 constexpr int8_t BAT_CONTROL = 17;  // HIGH=保持锂电池供电锁存
 constexpr int8_t BAT_KEY     = 18;  // PWR 按键输入,按下为 LOW
+constexpr int8_t BAT_ADC     = 4;   // 200K/200K 分压,VBAT = ADC 电压 * 2
 constexpr int8_t BOOT_KEY    = 0;   // BOOT 按键输入,按下为 LOW
 
 GxEPD2_BW<GxEPD2_154_D67, GxEPD2_154_D67::HEIGHT> display(
@@ -87,6 +88,30 @@ static bool power_button_pressed() {
 
 static bool boot_button_pressed() {
     return digitalRead(BOOT_KEY) == LOW;
+}
+
+static void configure_battery_adc() {
+    pinMode(BAT_ADC, INPUT);
+    analogReadResolution(12);
+    analogSetPinAttenuation(BAT_ADC, ADC_11db);
+}
+
+static uint16_t read_battery_mv() {
+    constexpr uint8_t SAMPLE_COUNT = 8;
+    uint32_t sum_mv = 0;
+    for (uint8_t i = 0; i < SAMPLE_COUNT; i++) {
+        sum_mv += analogReadMilliVolts(BAT_ADC);
+        delay(2);
+    }
+    return (sum_mv / SAMPLE_COUNT) * 2;
+}
+
+static uint8_t battery_percent_from_mv(uint16_t mv) {
+    constexpr uint16_t EMPTY_MV = 3300;
+    constexpr uint16_t FULL_MV = 4200;
+    if (mv <= EMPTY_MV) return 0;
+    if (mv >= FULL_MV) return 100;
+    return (uint32_t)(mv - EMPTY_MV) * 100 / (FULL_MV - EMPTY_MV);
 }
 
 static void configure_timezone() {
@@ -206,9 +231,12 @@ static void enter_home() {
 static void enter_menu() {
     g_page = Page::Menu;
     apply_touch_power_state();
-    Serial.println("[menu] enter");
+    uint16_t battery_mv = read_battery_mv();
+    uint8_t battery_percent = battery_percent_from_mv(battery_mv);
+    Serial.printf("[menu] enter, battery=%umV %u%%\n", battery_mv, battery_percent);
     menu_screen::render_menu_full(display, g_interaction_enabled,
-                                  audio_player::volume_level(), audio_player::volume_max());
+                                  audio_player::volume_level(), audio_player::volume_max(),
+                                  battery_percent, battery_mv);
     if (g_ui_fast_refresh_count < UINT8_MAX) g_ui_fast_refresh_count++;
 }
 
@@ -328,6 +356,7 @@ void setup() {
 
     touch_ft6336::begin();
     audio_player::begin();
+    configure_battery_adc();
 
     // ===== 屏幕初始化 =====
     pinMode(EPD_PWR, OUTPUT);

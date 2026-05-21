@@ -9,11 +9,12 @@ enum class Tile : uint8_t {
     Wifi,
     Interaction,
     Volume,
-    Empty,
+    Battery,
 };
 
 template <typename Display>
-void render_menu_full(Display& display, bool interaction_enabled, uint8_t volume_level, uint8_t volume_max);
+void render_menu_full(Display& display, bool interaction_enabled, uint8_t volume_level, uint8_t volume_max,
+                      uint8_t battery_percent, uint16_t battery_mv);
 
 template <typename Display>
 void render_interaction_tile(Display& display, bool interaction_enabled);

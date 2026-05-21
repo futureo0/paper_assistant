@@ -19,6 +19,7 @@ constexpr int VOLUME_BAR_W = 150;
 constexpr int VOLUME_BAR_H = 16;
 constexpr int WIFI_STATUS_Y = 136;
 constexpr int WIFI_STATUS_H = 22;
+constexpr bool SHOW_BATTERY_DEBUG_VOLTAGE = true;
 
 template <typename Display>
 static void draw_center_text(Display& display, const char* text, int x, int y, int w, int baseline) {
@@ -66,8 +67,25 @@ static void draw_volume_icon(Display& display, int cx, int cy, uint8_t level, ui
 }
 
 template <typename Display>
-static void draw_empty_icon(Display& display, int cx, int cy) {
-    display.drawFastHLine(cx - 16, cy + 2, 32, GxEPD_BLACK);
+static void draw_battery_icon(Display& display, int x, int y, uint8_t percent) {
+    constexpr int body_w = 42;
+    constexpr int body_h = 20;
+    display.drawRoundRect(x, y, body_w, body_h, 3, GxEPD_BLACK);
+    display.fillRect(x + body_w, y + 6, 4, 8, GxEPD_BLACK);
+
+    uint8_t clamped = percent > 100 ? 100 : percent;
+    int fill_w = (body_w - 6) * clamped / 100;
+    display.fillRect(x + 3, y + 3, fill_w, body_h - 6, GxEPD_BLACK);
+}
+
+template <typename Display>
+static void draw_battery_debug_voltage(Display& display, uint16_t battery_mv) {
+    if (!SHOW_BATTERY_DEBUG_VOLTAGE) return;
+
+    char voltage_buf[8];
+    snprintf(voltage_buf, sizeof(voltage_buf), "%u.%02uV", battery_mv / 1000, (battery_mv % 1000) / 10);
+    display.setTextSize(1);
+    draw_center_text(display, voltage_buf, RIGHT, BOTTOM, TILE, LABEL_BASELINE_OFFSET);
 }
 
 template <typename Display>
@@ -110,6 +128,21 @@ static void draw_volume_value(Display& display, uint8_t volume_level, uint8_t vo
 }
 
 template <typename Display>
+static void draw_battery_tile_content(Display& display, uint8_t battery_percent, uint16_t battery_mv) {
+    display.fillRect(RIGHT + 4, BOTTOM + 4, TILE - 8, TILE - 8, GxEPD_WHITE);
+    draw_battery_icon(display, RIGHT + 19, BOTTOM + 18, battery_percent);
+
+    display.setFont();
+    display.setTextColor(GxEPD_BLACK);
+    char percent_buf[8];
+    snprintf(percent_buf, sizeof(percent_buf), "%u%%", battery_percent > 100 ? 100 : battery_percent);
+    display.setTextSize(2);
+    draw_center_text(display, percent_buf, RIGHT, BOTTOM, TILE, 58);
+
+    draw_battery_debug_voltage(display, battery_mv);
+}
+
+template <typename Display>
 static void draw_wifi_status(Display& display, const char* msg) {
     display.fillRect(0, WIFI_STATUS_Y, SCR_W, WIFI_STATUS_H, GxEPD_WHITE);
     display.setFont();
@@ -119,7 +152,8 @@ static void draw_wifi_status(Display& display, const char* msg) {
 }
 
 template <typename Display>
-void render_menu_full(Display& display, bool interaction_enabled, uint8_t volume_level, uint8_t volume_max) {
+void render_menu_full(Display& display, bool interaction_enabled, uint8_t volume_level, uint8_t volume_max,
+                      uint8_t battery_percent, uint16_t battery_mv) {
     display.setPartialWindow(0, 0, SCR_W, SCR_H);
     display.firstPage();
     do {
@@ -134,7 +168,7 @@ void render_menu_full(Display& display, bool interaction_enabled, uint8_t volume
         draw_volume_icon(display, LEFT + TILE / 2, BOTTOM + 28, volume_level, volume_max);
 
         draw_tile(display, RIGHT, BOTTOM, "");
-        draw_empty_icon(display, RIGHT + TILE / 2, BOTTOM + 31);
+        draw_battery_tile_content(display, battery_percent, battery_mv);
     } while (display.nextPage());
 }
 
@@ -210,14 +244,14 @@ Tile tile_at(uint16_t x, uint16_t y) {
     if (x >= LEFT && x < LEFT + TILE && y >= TOP && y < TOP + TILE) return Tile::Wifi;
     if (x >= RIGHT && x < RIGHT + TILE && y >= TOP && y < TOP + TILE) return Tile::Interaction;
     if (x >= LEFT && x < LEFT + TILE && y >= BOTTOM && y < BOTTOM + TILE) return Tile::Volume;
-    if (x >= RIGHT && x < RIGHT + TILE && y >= BOTTOM && y < BOTTOM + TILE) return Tile::Empty;
+    if (x >= RIGHT && x < RIGHT + TILE && y >= BOTTOM && y < BOTTOM + TILE) return Tile::Battery;
     return Tile::None;
 }
 
 }  // namespace menu_screen
 
 template void menu_screen::render_menu_full<GxEPD2_BW<GxEPD2_154_D67, GxEPD2_154_D67::HEIGHT>>(
-    GxEPD2_BW<GxEPD2_154_D67, GxEPD2_154_D67::HEIGHT>&, bool, uint8_t, uint8_t);
+    GxEPD2_BW<GxEPD2_154_D67, GxEPD2_154_D67::HEIGHT>&, bool, uint8_t, uint8_t, uint8_t, uint16_t);
 template void menu_screen::render_interaction_tile<GxEPD2_BW<GxEPD2_154_D67, GxEPD2_154_D67::HEIGHT>>(
     GxEPD2_BW<GxEPD2_154_D67, GxEPD2_154_D67::HEIGHT>&, bool);
 template void menu_screen::render_volume_page<GxEPD2_BW<GxEPD2_154_D67, GxEPD2_154_D67::HEIGHT>>(
